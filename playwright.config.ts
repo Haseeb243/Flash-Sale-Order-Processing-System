@@ -1,6 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const DATABASE_URL = 'postgres://flash:flash@localhost:5433/flashsale';
 const BACKEND_CWD = 'backend';
 
 export default defineConfig({
@@ -19,6 +18,7 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
+  // DATABASE_URL and DB settings come from backend/.env; only test-specific values are overridden here.
   webServer: [
     {
       command: 'npx tsx src/server.ts',
@@ -28,7 +28,6 @@ export default defineConfig({
         PORT: '4000',
         ALLOW_DEV_RESET: '1',
         RESERVATION_TTL_SECONDS: '3',
-        DATABASE_URL,
       },
       reuseExistingServer: false,
       timeout: 60000,
@@ -41,7 +40,6 @@ export default defineConfig({
         PORT: '4001',
         ALLOW_DEV_RESET: '1',
         RESERVATION_TTL_SECONDS: '3',
-        DATABASE_URL,
       },
       reuseExistingServer: false,
       timeout: 60000,

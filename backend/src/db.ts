@@ -5,10 +5,10 @@ import { config } from './config';
 // queueing forever on the pool or on a hot product row lock.
 export const pool = new Pool({
   connectionString: config.databaseUrl,
-  max: 20,
-  connectionTimeoutMillis: 5000,
-  statement_timeout: 5000,
-  lock_timeout: 3000,
+  max: config.db.poolMax,
+  connectionTimeoutMillis: config.db.connectTimeoutMs,
+  statement_timeout: config.db.statementTimeoutMs,
+  lock_timeout: config.db.lockTimeoutMs,
 });
 
 pool.on('error', (err) => console.error('idle pg client error', err));

@@ -13,14 +13,15 @@
  */
 import { randomUUID } from 'crypto';
 import { Pool } from 'pg';
+import { config } from '../src/config';
 
-const BASES = ['http://localhost:4000', 'http://localhost:4001'];
+const BASES = (process.env.STRESS_API_URLS ?? 'http://localhost:4000,http://localhost:4001').split(',');
 const N = Number(process.argv[2] ?? 3000);
 const CONCURRENCY = Number(process.argv[3] ?? 200);
 const TTL_MS = Number(process.env.RESERVATION_TTL_SECONDS ?? 3) * 1000;
 const INITIAL: Record<string, number> = { laptop: 2, keyboard: 50, mouse: 500 };
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? 'postgres://flash:flash@localhost:5433/flashsale' });
+const pool = new Pool({ connectionString: config.databaseUrl });
 const statusCounts: Record<string, number> = {};
 const latencies: number[] = [];
 const failures: string[] = [];
