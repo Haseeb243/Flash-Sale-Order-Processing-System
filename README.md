@@ -6,10 +6,17 @@ The requirements checklist is in [REQUIREMENTS.md](REQUIREMENTS.md). The full de
 ## Run
 
 ```bash
-docker compose up -d --wait                         # Postgres on :5433
-cd backend  && npm i && ALLOW_DEV_RESET=1 npm run dev   # API on :4000 (migrates + seeds on boot)
-cd frontend && npm i && npm run dev                 # UI on :5173 (proxies /api)
+cp .env.example .env                       # Postgres credentials/port for docker compose
+cp backend/.env.example backend/.env       # DATABASE_URL, TTL, pool timeouts (set ALLOW_DEV_RESET=1 for demo/tests)
+cp frontend/.env.example frontend/.env     # API_PROXY_TARGET for the Vite dev proxy
+
+docker compose up -d --wait                # Postgres
+cd backend  && npm i && npm run dev        # API on :4000 (migrates + seeds on boot)
+cd frontend && npm i && npm run dev        # UI on :5173 (proxies /api)
 ```
+
+All config lives in `.env` files (git-ignored; `.env.example` files are committed). Real environment
+variables override them. The backend refuses to start without `DATABASE_URL`.
 
 Tests (start their own 2 backend instances on :4000/:4001 and the UI; the DB must be up):
 
