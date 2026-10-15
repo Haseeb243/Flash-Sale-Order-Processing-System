@@ -117,13 +117,9 @@ h2 {
   font-size: 12px;
 }
 
-.num {
+.table .num {
   text-align: right;
   font-variant-numeric: tabular-nums;
-}
-
-th.num {
-  text-align: right;
 }
 
 .mono {

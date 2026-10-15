@@ -10,16 +10,20 @@ export interface PaymentEventInput {
   status: 'payment_succeeded' | 'payment_failed';
 }
 
-export type PaymentResult = { duplicate: true; order: Order } | { duplicate: false; outcome: string; order: Order };
+export type PaymentResult =
+  | { duplicate: true; order: Order }
+  | { duplicate: false; outcome: string; refund_required: boolean; order: Order };
 
-async function expireNow(client: PoolClient, order: Order): Promise<Order> {
-  await releaseStock(client, order.product_id, order.quantity);
+// Every exit from 'reserved' goes through here, so the status guard and the stock release can
+// never drift apart. Caller must hold the order row lock (lock order: order row, then product row).
+async function transition(client: PoolClient, order: Order, to: 'confirmed' | 'cancelled' | 'expired'): Promise<Order> {
   const { rows } = await client.query<Order>(
-    `UPDATE orders SET status = 'expired', updated_at = now()
+    `UPDATE orders SET status = $2, updated_at = now()
      WHERE id = $1 AND status = 'reserved' RETURNING ${ORDER_COLUMNS}`,
-    [order.id],
+    [order.id, to],
   );
-  return rows[0];
+  if (rows.length > 0 && to !== 'confirmed') await releaseStock(client, order.product_id, order.quantity);
+  return rows[0] ?? order;
 }
 
 export async function handlePaymentEvent(input: PaymentEventInput): Promise<PaymentResult> {
@@ -36,15 +40,18 @@ export async function handlePaymentEvent(input: PaymentEventInput): Promise<Paym
     if (ins.rowCount === 0) {
       // Read through the transaction's own client: borrowing a second pool connection while
       // holding this one starves the pool under a burst of redeliveries.
-      const prior = await client.query<Order>(
-        `SELECT ${ORDER_COLUMNS} FROM orders
-         WHERE id = (SELECT order_id FROM payment_events WHERE event_id = $1)`,
+      const prior = await client.query<{ order_id: string; status: string }>(
+        'SELECT order_id, status FROM payment_events WHERE event_id = $1',
         [input.eventId],
       );
-      return { duplicate: true, order: prior.rows[0] };
+      const { order_id: priorOrderId, status: priorStatus } = prior.rows[0];
+      if (priorOrderId !== input.orderId || priorStatus !== input.status) {
+        throw new AppError(409, 'EVENT_ID_CONFLICT', 'event_id was already used for a different order or status');
+      }
+      const current = await client.query<Order>(`SELECT ${ORDER_COLUMNS} FROM orders WHERE id = $1`, [priorOrderId]);
+      return { duplicate: true, order: current.rows[0] };
     }
 
-    // Lock order: order row, then product row. Expiry follows the same order, so no deadlock.
     const found = await client.query<Order & { is_expired: boolean }>(
       `SELECT ${ORDER_COLUMNS}, expires_at <= now() AS is_expired FROM orders WHERE id = $1 FOR UPDATE`,
       [input.orderId],
@@ -57,32 +64,26 @@ export async function handlePaymentEvent(input: PaymentEventInput): Promise<Paym
 
     if (order.status !== 'reserved') {
       outcome = `ignored_${order.status}`;
-    } else if (input.status === 'payment_succeeded' && !isExpired) {
-      outcome = 'applied_confirmed';
-      updated = (
-        await client.query<Order>(
-          `UPDATE orders SET status = 'confirmed', updated_at = now()
-           WHERE id = $1 AND status = 'reserved' RETURNING ${ORDER_COLUMNS}`,
-          [order.id],
-        )
-      ).rows[0];
-    } else if (input.status === 'payment_succeeded') {
+    } else if (input.status === 'payment_failed') {
+      outcome = 'applied_cancelled';
+      updated = await transition(client, order, 'cancelled');
+    } else if (isExpired) {
       // Late payment never confirms an expired reservation.
       outcome = 'rejected_expired';
-      updated = await expireNow(client, order);
+      updated = await transition(client, order, 'expired');
     } else {
-      outcome = 'applied_cancelled';
-      await releaseStock(client, order.product_id, order.quantity);
-      updated = (
-        await client.query<Order>(
-          `UPDATE orders SET status = 'cancelled', updated_at = now()
-           WHERE id = $1 AND status = 'reserved' RETURNING ${ORDER_COLUMNS}`,
-          [order.id],
-        )
-      ).rows[0];
+      outcome = 'applied_confirmed';
+      updated = await transition(client, order, 'confirmed');
     }
 
-    await client.query('UPDATE payment_events SET outcome = $2 WHERE event_id = $1', [input.eventId, outcome]);
-    return { duplicate: false, outcome, order: updated };
+    // Money captured that did not confirm this order (second payment, payment after cancel or
+    // expiry) is flagged so a reconciliation job can refund it.
+    const refundRequired = input.status === 'payment_succeeded' && outcome !== 'applied_confirmed';
+    await client.query('UPDATE payment_events SET outcome = $2, refund_required = $3 WHERE event_id = $1', [
+      input.eventId,
+      outcome,
+      refundRequired,
+    ]);
+    return { duplicate: false, outcome, refund_required: refundRequired, order: updated };
   });
 }

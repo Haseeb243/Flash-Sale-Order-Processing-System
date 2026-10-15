@@ -99,4 +99,21 @@ test.describe('POST /api/webhooks/payment', () => {
     await expectError(await webhook(request, missingOrderId, 'payment_succeeded', eventId), 404, 'ORDER_NOT_FOUND');
     await expectError(await webhook(request, missingOrderId, 'payment_succeeded', eventId), 404, 'ORDER_NOT_FOUND');
   });
+
+  test('11. second payment on a confirmed order is flagged refund_required; reused event_id for another order is 409', async ({ request }) => {
+    const order = await reserveLaptop(request);
+    const first = await readJson<WebhookResponse & { refund_required: boolean }>(await webhook(request, order.id, 'payment_succeeded'));
+    expect(first.outcome).toBe('applied_confirmed');
+    expect(first.refund_required).toBe(false);
+
+    const second = await readJson<WebhookResponse & { refund_required: boolean }>(await webhook(request, order.id, 'payment_succeeded'));
+    expect(second.outcome).toBe('ignored_confirmed');
+    expect(second.refund_required).toBe(true);
+
+    const other = await reserveLaptop(request);
+    const eventId = `evt_${uid()}`;
+    expect((await webhook(request, order.id, 'payment_failed', eventId)).status()).toBe(200);
+    await expectError(await webhook(request, other.id, 'payment_failed', eventId), 409, 'EVENT_ID_CONFLICT');
+    expect((await readJson<Order>(await request.get(`${API_A}/api/orders/${other.id}`))).status).toBe('reserved');
+  });
 });

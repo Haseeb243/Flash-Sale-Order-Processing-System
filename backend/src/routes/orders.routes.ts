@@ -7,7 +7,7 @@ export const ordersRouter = Router();
 
 ordersRouter.post('/', async (req, res) => {
   const body = parse(createOrderBody, req.body);
-  const key = parse(idempotencyKey, body.idempotency_key ?? req.get('Idempotency-Key'));
+  const key = parse(idempotencyKey, body.idempotency_key ?? req.get('Idempotency-Key') ?? '');
   const { order, replayed } = await createOrder({
     customerId: body.customer_id,
     productId: body.product_id,

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   createOrder,
   errorMessage,
   expireReservations,
   fetchOrders,
   fetchProducts,
+  isRetryable,
   sendPaymentEvent,
   shortId,
   type Order,
@@ -15,6 +16,19 @@ import OrdersTable from './components/OrdersTable'
 import ProductsTable from './components/ProductsTable'
 
 type Banner = { variant: 'success' | 'error'; text: string }
+type PendingKeys = Record<string, { key: string; at: number }>
+
+// A key is reused only for a quick retry of the same intent (network error / 5xx), so the server
+// replays the first attempt instead of applying it twice. After the window a click is a new request.
+const RETRY_WINDOW_MS = 30_000
+
+function retryKey(store: PendingKeys, intent: string): string {
+  const hit = store[intent]
+  if (hit && Date.now() - hit.at < RETRY_WINDOW_MS) return hit.key
+  const key = crypto.randomUUID()
+  store[intent] = { key, at: Date.now() }
+  return key
+}
 
 export default function App() {
   const [customerId, setCustomerId] = useState('customer_1')
@@ -32,6 +46,7 @@ export default function App() {
   const [reserving, setReserving] = useState<Record<string, boolean>>({})
   const [paying, setPaying] = useState<Record<string, boolean>>({})
   const [expiring, setExpiring] = useState(false)
+  const pendingKeys = useRef<PendingKeys>({})
 
   const cid = customerId.trim()
   const reload = () => setReloadKey((k) => k + 1)
@@ -89,19 +104,25 @@ export default function App() {
 
   async function handleReserve(productId: string, quantity: number) {
     setReserving((prev) => ({ ...prev, [productId]: true }))
+    const intent = `order:${cid}:${productId}:${quantity}`
+    const key = retryKey(pendingKeys.current, intent)
     try {
       const order = await createOrder({
         customer_id: cid,
         product_id: productId,
         quantity,
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: key,
       })
-      setBanner({
-        variant: 'success',
-        text: `Order ${shortId(order.id)} reserved — pay within 2 minutes`,
-      })
+      delete pendingKeys.current[intent]
+      // A replayed key returns the order as it is now, which may no longer be reserved.
+      setBanner(
+        order.status === 'reserved'
+          ? { variant: 'success', text: `Order ${shortId(order.id)} reserved — pay within 2 minutes` }
+          : { variant: 'error', text: `Order ${shortId(order.id)} is already ${order.status}` },
+      )
       reload()
     } catch (err) {
+      if (!isRetryable(err)) delete pendingKeys.current[intent]
       setBanner({ variant: 'error', text: errorMessage(err) })
     } finally {
       setReserving((prev) => ({ ...prev, [productId]: false }))
@@ -110,14 +131,17 @@ export default function App() {
 
   async function handlePay(order: Order, status: PaymentStatus) {
     setPaying((prev) => ({ ...prev, [order.id]: true }))
+    const intent = `pay:${order.id}:${status}`
     try {
-      const res = await sendPaymentEvent(order.id, status)
+      const res = await sendPaymentEvent(order.id, status, `evt_${retryKey(pendingKeys.current, intent)}`)
+      delete pendingKeys.current[intent]
       setBanner({
         variant: 'success',
         text: `Order ${shortId(order.id)} is now ${res.order.status}`,
       })
       reload()
     } catch (err) {
+      if (!isRetryable(err)) delete pendingKeys.current[intent]
       setBanner({ variant: 'error', text: errorMessage(err) })
     } finally {
       setPaying((prev) => ({ ...prev, [order.id]: false }))

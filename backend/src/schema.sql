@@ -28,5 +28,7 @@ CREATE TABLE IF NOT EXISTS payment_events (
   order_id    UUID NOT NULL,
   status      TEXT NOT NULL,
   outcome     TEXT NOT NULL,                   -- applied_confirmed | applied_cancelled | ignored_<state> | rejected_expired
+  refund_required BOOLEAN NOT NULL DEFAULT false, -- payment captured but order not confirmed by it
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE payment_events ADD COLUMN IF NOT EXISTS refund_required BOOLEAN NOT NULL DEFAULT false;

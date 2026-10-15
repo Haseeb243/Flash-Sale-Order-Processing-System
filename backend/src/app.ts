@@ -20,6 +20,9 @@ export function createApp(): express.Express {
   app.use('/api/webhooks', webhooksRouter);
   if (config.allowDevReset) app.use('/api/dev', devRouter);
 
+  app.use((_req, res) => {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Route not found' } });
+  });
   app.use(errorHandler);
   return app;
 }

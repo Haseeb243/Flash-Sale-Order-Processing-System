@@ -31,7 +31,7 @@ export interface CreateOrderInput {
   idempotencyKey: string;
 }
 
-export function requestHash(productId: string, quantity: number): string {
+function requestHash(productId: string, quantity: number): string {
   return createHash('sha256').update(`${productId}:${quantity}`).digest('hex');
 }
 

@@ -33,12 +33,26 @@ export interface CreateOrderInput {
 export interface PaymentEventResponse {
   duplicate: boolean
   outcome?: string
+  refund_required?: boolean
   order: Order
 }
 
 export interface ExpireResponse {
   expired: number
   order_ids: string[]
+}
+
+export class ApiError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+/** Network failures and 5xx may not have been applied server-side, so the same idempotency key must be reused. */
+export function isRetryable(err: unknown): boolean {
+  return !(err instanceof ApiError) || err.status >= 500
 }
 
 interface ErrorBody {
@@ -61,7 +75,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const message = (body as ErrorBody | null)?.error?.message
-    throw new Error(message ?? `Request failed with status ${res.status}`)
+    throw new ApiError(res.status, message ?? `Request failed with status ${res.status}`)
   }
   return body as T
 }
@@ -78,11 +92,12 @@ export function createOrder(input: CreateOrderInput): Promise<Order> {
   return request<Order>('/orders', { method: 'POST', body: JSON.stringify(input) })
 }
 
-export function sendPaymentEvent(orderId: string, status: PaymentStatus): Promise<PaymentEventResponse> {
+/** Simulates the provider. Reusing eventId on retry is what makes repeated delivery a no-op. */
+export function sendPaymentEvent(orderId: string, status: PaymentStatus, eventId: string): Promise<PaymentEventResponse> {
   return request<PaymentEventResponse>('/webhooks/payment', {
     method: 'POST',
     body: JSON.stringify({
-      event_id: `evt_${crypto.randomUUID()}`,
+      event_id: eventId,
       order_id: orderId,
       status,
     }),

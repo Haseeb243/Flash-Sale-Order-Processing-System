@@ -18,6 +18,26 @@ npm i && npx playwright install chromium
 npm run test:e2e
 ```
 
+Stress / chaos test (needs two backends on :4000/:4001 started with `ALLOW_DEV_RESET=1 RESERVATION_TTL_SECONDS=3`):
+
+```bash
+cd backend && RESERVATION_TTL_SECONDS=3 npm run stress -- 3000 200   # [orders] [concurrency]
+```
+
+It runs:
+- a 500-request herd on a product with 2 units;
+- thousands of orders with concurrent same-key retries split across both instances;
+- duplicate and conflicting webhooks timed to land on both sides of the expiry boundary, while expiry sweeps run every 100ms on both instances.
+
+It then checks DB invariants:
+- stock conservation (`initial = stock + reserved/confirmed qty`) and stock never negative;
+- one order per idempotency key;
+- at most one state-changing event per order;
+- no confirmation after expiry;
+- no pending events and no 5xx responses.
+
+Local result (2 instances, 1 Postgres): 21,950 requests at 515 req/s and 500 concurrency. All invariants held, with 0 errors and 0 deadlocks.
+
 ## Architecture decisions
 
 ### 1. Inventory race conditions: atomic conditional UPDATE
@@ -75,3 +95,7 @@ Locks are always taken in the order *order row → product row*. Order creation 
 - Failed (409) attempts are not stored against the idempotency key, so a retry re-evaluates stock.
 - Hot-row contention caps throughput per SKU. At extreme scale, stock could be split into buckets or reservations queued.
 - `/api/dev/reset` exists for tests only and is enabled only with `ALLOW_DEV_RESET=1`.
+- A success event for an already cancelled or expired order is recorded (`ignored_cancelled` / `rejected_expired`) but not refunded. A reconciliation job would read `payment_events` for this.
+- A redelivered `event_id` with a different `order_id` or `status` is treated as a duplicate and not flagged.
+- Auth is assumed: `customer_id` is trusted from the request, `GET /api/orders` is not scoped to a session, `/api/orders/expire` is open and CORS allows any origin.
+- DB waits are bounded (pool connect 5s, `statement_timeout` 5s, `lock_timeout` 3s). A timeout returns `503 BUSY` with `Retry-After`, and the client retries with the same idempotency key.
